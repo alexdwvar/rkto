@@ -90,6 +90,10 @@ test/
 - `bun run db:migrate` — Run migrations
 - `bun run db:studio` — Open Drizzle Studio
 
+## API Documentation
+
+The API exposes `GET /api/docs` which returns a markdown document describing all endpoints, parameters, and response types. This is designed to be consumed by AI agents — lightweight and always in sync with the codebase.
+
 ## V2 Considerations (NOT in scope for v1)
 
 - Auth with JWT

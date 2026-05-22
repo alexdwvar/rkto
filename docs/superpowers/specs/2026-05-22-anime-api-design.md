@@ -448,6 +448,16 @@ Eliminar relación.
 
 ---
 
+### API Documentation
+
+#### `GET /api/docs`
+
+Devuelve un markdown generado automáticamente que documenta todos los endpoints, parámetros, tipos de request/response y códigos de estado. Diseñado para ser consumido por agentes de IA — liviano en contexto, fácil de escanear.
+
+El markdown se genera a partir de las rutas y Zod schemas definidos en el código, asegurando que siempre esté en sync con la implementación.
+
+---
+
 ## Response Format
 
 ### Success (listas)
