@@ -101,3 +101,7 @@ test/
 ## Language
 
 The user communicates in Spanish. Respond in Spanish.
+
+## Important
+
+After making changes — new features, schema changes, new conventions, bug fixes — update this AGENTS.md file to reflect the current state of the project. Keep conventions, database notes, and project structure in sync with what actually exists in the codebase.
