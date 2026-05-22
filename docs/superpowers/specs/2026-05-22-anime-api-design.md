@@ -214,7 +214,7 @@ Listar anime con filtros y paginación.
 | search | string | Búsqueda en título y alt_titles |
 | media_type | string | Filtrar por tipo: tv, movie, ova, ona, special |
 | status | string | Filtrar por estado |
-| genre | string | Nombre de género (puede repetir: genre=Action&genre=Romance) |
+| genre | string | Nombres de género, separados por coma: `genre=Action,Romance` |
 | season_year | integer | Filtrar por año de temporada |
 | season_name | string | Filtrar por temporada (winter, spring, summer, fall) |
 | sort | string | Campo: title, rating, created_at (default: created_at) |
@@ -262,6 +262,7 @@ Detalle de un anime con géneros, temporadas y relaciones.
     "media_type": "tv",
     "status": "finished",
     "source": "manga",
+    "rating": 8.72,
     "duration": null,
     "release_date": null,
     "genres": [
@@ -480,8 +481,8 @@ El markdown se genera a partir de las rutas y Zod schemas definidos en el códig
 
 ### Status Codes
 - 200 — OK
-- 201 — Created
-- 204 — No Content (DELETE)
+- 201 — Created (POST responses return the created resource)
+- 204 — No Content (DELETE responses, no body)
 - 400 — Validation error
 - 404 — Not Found
 - 500 — Server Error
