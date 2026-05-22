@@ -87,7 +87,8 @@ test/
 ## V2 Considerations (NOT in scope for v1)
 
 - Auth with JWT
-- User ratings with rate limiting by IP
+- User ratings (average score per anime)
+- Rate limiting by IP
 - Full-text search (FTS5)
 - Image upload
 

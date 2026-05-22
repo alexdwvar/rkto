@@ -71,6 +71,7 @@ test/
 | source | text | | manga, light_novel, original, game, etc. |
 | duration | integer | | Minutos totales (para películas, specials) |
 | release_date | text | ISO date | Fecha para lo que no tiene temporadas |
+| rating | real | | Rating global de la serie (IMDb/TMDB/AniList) |
 | created_at | text | NOT NULL, default now | ISO timestamp |
 | updated_at | text | NOT NULL, default now | ISO timestamp |
 
@@ -87,7 +88,7 @@ test/
 | season_name | text | | winter, spring, summer, fall |
 | start_date | text | ISO date | |
 | end_date | text | ISO date | |
-| external_rating | real | | Rating externo (IMDb/TMDB/AniList) |
+| external_rating | real | | Rating externo de la temporada (IMDb/TMDB/AniList) |
 | | | UNIQUE(anime_id, season_number) | |
 
 ### `episodes`
@@ -202,7 +203,7 @@ Listar anime con filtros y paginación.
 | genre | string | Nombre de género (puede repetir: genre=Action&genre=Romance) |
 | season_year | integer | Filtrar por año de temporada |
 | season_name | string | Filtrar por temporada (winter, spring, summer, fall) |
-| sort | string | Campo: title, external_rating, created_at (default: created_at) |
+| sort | string | Campo: title, rating, created_at (default: created_at) |
 | order | string | asc o desc (default: desc) |
 
 **Response:**
@@ -506,9 +507,16 @@ Eliminar relación.
 
 ---
 
+## CORS
+
+La API debe habilitar CORS para permitir consumo desde browsers. Se usa `hono/cors` middleware configurado en el entry point con origen `*` y métodos GET, POST, PUT, DELETE.
+
+---
+
 ## V2 Considerations (not in scope)
 
 - **Auth** — JWT con registro/login para proteger operaciones de escritura
-- **User ratings** — Tabla `user_ratings` con rate limit por IP, calculando promedio dinámicamente
+- **User ratings** — Tabla `user_ratings`, calculando promedio dinámicamente
+- **Rate limiting** — Rate limiting por IP en endpoints públicos
 - **Full-text search** — FTS5 de SQLite para búsqueda más rápida en títulos
 - **Image upload** — En vez de URLs externas
