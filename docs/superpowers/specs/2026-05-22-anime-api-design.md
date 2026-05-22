@@ -230,6 +230,7 @@ Listar anime con filtros y paginación.
       "alt_titles": {"japanese": "ワンパンマン", "english": "One Punch Man"},
       "media_type": "tv",
       "status": "finished",
+      "rating": 8.72,
       "image_url": "...",
       "genres": ["Action", "Comedy"],
       "season_count": 2,
@@ -363,17 +364,21 @@ Listar episodios de una temporada.
 
 Listar episodios de un anime sin temporada (OVAs, specials).
 
-#### `GET /api/anime/:animeId/seasons/:seasonId/episodes/:episodeId`
+#### `GET /api/anime/:animeId/episodes/:episodeId`
 
-Detalle de un episodio.
-
-#### `POST /api/anime/:animeId/seasons/:seasonId/episodes`
-
-Crear episodio en una temporada.
+Detalle de un episodio sin temporada.
 
 #### `POST /api/anime/:animeId/episodes`
 
-Crear episodio sin temporada.
+Crear episodio sin temporada. Si se incluye `season_id`, debe pertenecer al `:animeId` del path. Si no se incluye, el episodio se crea sin temporada.
+
+#### `PUT /api/anime/:animeId/episodes/:episodeId`
+
+Actualizar episodio sin temporada.
+
+#### `DELETE /api/anime/:animeId/episodes/:episodeId`
+
+Eliminar episodio sin temporada.
 
 #### `PUT /api/anime/:animeId/seasons/:seasonId/episodes/:episodeId`
 
