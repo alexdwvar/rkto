@@ -184,17 +184,79 @@ export function createDb(filename: string = 'anime.db') {
   const sqlite = new Database(filename);
   sqlite.pragma('journal_mode = WAL');
   sqlite.pragma('foreign_keys = ON');
+  const db = drizzle(sqlite, { schema });
+  // Push schema to create tables (dev mode — for production, use migrations)
+  pushSchema(sqlite);
   // Create partial unique index that Drizzle can't define in schema
   sqlite.exec('CREATE UNIQUE INDEX IF NOT EXISTS episodes_anime_id_episode_number_null_season ON episodes(anime_id, episode_number) WHERE season_id IS NULL');
-  return drizzle(sqlite, { schema });
+  return db;
 }
 
 export function createTestDb() {
   const sqlite = new Database(':memory:');
   sqlite.pragma('foreign_keys = ON');
-  // Create partial unique index that Drizzle can't define in schema
+  const db = drizzle(sqlite, { schema });
+  pushSchema(sqlite);
   sqlite.exec('CREATE UNIQUE INDEX IF NOT EXISTS episodes_anime_id_episode_number_null_season ON episodes(anime_id, episode_number) WHERE season_id IS NULL');
-  return drizzle(sqlite, { schema });
+  return db;
+}
+
+function pushSchema(sqlite: Database.Database) {
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS anime (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      alt_titles TEXT,
+      synopsis TEXT,
+      image_url TEXT,
+      media_type TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'not_yet_aired',
+      source TEXT,
+      duration INTEGER,
+      release_date TEXT,
+      rating REAL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS seasons (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      anime_id INTEGER NOT NULL REFERENCES anime(id) ON DELETE CASCADE,
+      title TEXT,
+      season_number INTEGER NOT NULL,
+      episode_count INTEGER,
+      season_year INTEGER,
+      season_name TEXT,
+      start_date TEXT,
+      end_date TEXT,
+      external_rating REAL,
+      UNIQUE(anime_id, season_number)
+    );
+    CREATE TABLE IF NOT EXISTS episodes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      anime_id INTEGER NOT NULL REFERENCES anime(id) ON DELETE CASCADE,
+      season_id INTEGER REFERENCES seasons(id) ON DELETE CASCADE,
+      episode_number INTEGER NOT NULL,
+      title TEXT,
+      duration INTEGER,
+      air_date TEXT,
+      UNIQUE(season_id, episode_number)
+    );
+    CREATE TABLE IF NOT EXISTS genres (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE
+    );
+    CREATE TABLE IF NOT EXISTS anime_genres (
+      anime_id INTEGER NOT NULL REFERENCES anime(id) ON DELETE CASCADE,
+      genre_id INTEGER NOT NULL REFERENCES genres(id) ON DELETE CASCADE,
+      PRIMARY KEY (anime_id, genre_id)
+    );
+    CREATE TABLE IF NOT EXISTS anime_relations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_anime_id INTEGER NOT NULL REFERENCES anime(id) ON DELETE CASCADE,
+      target_anime_id INTEGER NOT NULL REFERENCES anime(id) ON DELETE CASCADE,
+      relation_type TEXT NOT NULL
+    );
+  `);
 }
 
 export type Database = ReturnType<typeof createDb>;
@@ -458,7 +520,7 @@ Start with genres because anime create depends on genre resolution.
 Create `src/services/genres.ts`:
 
 ```typescript
-import { eq, inArray } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import type { Database } from '../db/connection';
 import { genres, animeGenres } from '../db/schema';
 
@@ -830,7 +892,7 @@ export async function createSeason(db: Database, animeId: number, data: {
     endDate: data.end_date,
     externalRating: data.external_rating,
   }).returning().get();
-  return result;
+  return mapSeasonRow(result);
 }
 
 export async function updateSeason(db: Database, animeId: number, seasonId: number, data: Record<string, unknown>) {
@@ -1104,7 +1166,234 @@ animeRoutes.delete('/:id', async (c) => {
 });
 ```
 
-Create `src/routes/seasons.ts`, `src/routes/episodes.ts`, `src/routes/genres.ts`, `src/routes/relations.ts` following the same pattern — thin handlers calling services. Each follows the endpoint spec exactly.
+Create `src/routes/seasons.ts`:
+
+```typescript
+import { Hono } from 'hono';
+import { zValidator } from '@hono/zod-validator';
+import { createSeasonSchema, updateSeasonSchema, seasonListQuerySchema } from '../validators/seasons';
+import type { Database } from '../db/connection';
+import * as seasonService from '../services/seasons';
+
+export const seasonsRoutes = new Hono<{ Variables: { db: Database } }>();
+
+// Nested under anime
+seasonsRoutes.get('/:animeId/seasons', async (c) => {
+  const db = c.get('db');
+  const animeId = Number(c.req.param('animeId'));
+  const seasons = await seasonService.listSeasonsByAnime(db, animeId);
+  return c.json({ data: seasons });
+});
+
+seasonsRoutes.get('/:animeId/seasons/:seasonId', async (c) => {
+  const db = c.get('db');
+  const animeId = Number(c.req.param('animeId'));
+  const seasonId = Number(c.req.param('seasonId'));
+  const season = await seasonService.getSeasonById(db, animeId, seasonId);
+  if (!season) return c.json({ error: { code: 404, message: 'Season not found' } }, 404);
+  return c.json({ data: season });
+});
+
+seasonsRoutes.post('/:animeId/seasons', zValidator('json', createSeasonSchema), async (c) => {
+  const db = c.get('db');
+  const animeId = Number(c.req.param('animeId'));
+  const body = c.req.valid('json');
+  const season = await seasonService.createSeason(db, animeId, body);
+  return c.json({ data: season }, 201);
+});
+
+seasonsRoutes.put('/:animeId/seasons/:seasonId', zValidator('json', updateSeasonSchema), async (c) => {
+  const db = c.get('db');
+  const animeId = Number(c.req.param('animeId'));
+  const seasonId = Number(c.req.param('seasonId'));
+  const body = c.req.valid('json');
+  const season = await seasonService.updateSeason(db, animeId, seasonId, body);
+  if (!season) return c.json({ error: { code: 404, message: 'Season not found' } }, 404);
+  return c.json({ data: season });
+});
+
+seasonsRoutes.delete('/:animeId/seasons/:seasonId', async (c) => {
+  const db = c.get('db');
+  const animeId = Number(c.req.param('animeId'));
+  const seasonId = Number(c.req.param('seasonId'));
+  const deleted = await seasonService.deleteSeason(db, animeId, seasonId);
+  if (!deleted) return c.json({ error: { code: 404, message: 'Season not found' } }, 404);
+  return c.body(null, 204);
+});
+
+// Global seasons list
+seasonsRoutes.get('/seasons', async (c) => {
+  const db = c.get('db');
+  const query = seasonListQuerySchema.parse(c.req.query());
+  const seasons = await seasonService.listGlobalSeasons(db, { year: query.year, season_name: query.season_name });
+  return c.json({ data: seasons });
+});
+```
+
+Create `src/routes/episodes.ts`:
+
+```typescript
+import { Hono } from 'hono';
+import { zValidator } from '@hono/zod-validator';
+import { createEpisodeSchema, updateEpisodeSchema } from '../validators/episodes';
+import type { Database } from '../db/connection';
+import * as episodeService from '../services/episodes';
+
+export const episodesRoutes = new Hono<{ Variables: { db: Database } }>();
+
+// Episodes under a season
+episodesRoutes.get('/:animeId/seasons/:seasonId/episodes', async (c) => {
+  const db = c.get('db');
+  const seasonId = Number(c.req.param('seasonId'));
+  const episodes = await episodeService.listEpisodesBySeason(db, seasonId);
+  return c.json({ data: episodes });
+});
+
+episodesRoutes.get('/:animeId/seasons/:seasonId/episodes/:episodeId', async (c) => {
+  const db = c.get('db');
+  const episodeId = Number(c.req.param('episodeId'));
+  const episode = await episodeService.getEpisodeById(db, episodeId);
+  if (!episode) return c.json({ error: { code: 404, message: 'Episode not found' } }, 404);
+  return c.json({ data: episode });
+});
+
+episodesRoutes.post('/:animeId/seasons/:seasonId/episodes', zValidator('json', createEpisodeSchema), async (c) => {
+  const db = c.get('db');
+  const animeId = Number(c.req.param('animeId'));
+  const seasonId = Number(c.req.param('seasonId'));
+  const body = c.req.valid('json');
+  const episode = await episodeService.createEpisode(db, animeId, { ...body, season_id: seasonId });
+  return c.json({ data: episode }, 201);
+});
+
+episodesRoutes.put('/:animeId/seasons/:seasonId/episodes/:episodeId', zValidator('json', updateEpisodeSchema), async (c) => {
+  const db = c.get('db');
+  const episodeId = Number(c.req.param('episodeId'));
+  const body = c.req.valid('json');
+  const episode = await episodeService.updateEpisode(db, episodeId, body);
+  if (!episode) return c.json({ error: { code: 404, message: 'Episode not found' } }, 404);
+  return c.json({ data: episode });
+});
+
+episodesRoutes.delete('/:animeId/seasons/:seasonId/episodes/:episodeId', async (c) => {
+  const db = c.get('db');
+  const episodeId = Number(c.req.param('episodeId'));
+  const deleted = await episodeService.deleteEpisode(db, episodeId);
+  if (!deleted) return c.json({ error: { code: 404, message: 'Episode not found' } }, 404);
+  return c.body(null, 204);
+});
+
+// Episodes without season (OVAs, specials)
+episodesRoutes.get('/:animeId/episodes', async (c) => {
+  const db = c.get('db');
+  const animeId = Number(c.req.param('animeId'));
+  const episodes = await episodeService.listEpisodesByAnime(db, animeId);
+  return c.json({ data: episodes });
+});
+
+episodesRoutes.get('/:animeId/episodes/:episodeId', async (c) => {
+  const db = c.get('db');
+  const episodeId = Number(c.req.param('episodeId'));
+  const episode = await episodeService.getEpisodeById(db, episodeId);
+  if (!episode) return c.json({ error: { code: 404, message: 'Episode not found' } }, 404);
+  return c.json({ data: episode });
+});
+
+episodesRoutes.post('/:animeId/episodes', zValidator('json', createEpisodeSchema), async (c) => {
+  const db = c.get('db');
+  const animeId = Number(c.req.param('animeId'));
+  const body = c.req.valid('json');
+  const episode = await episodeService.createEpisode(db, animeId, body);
+  return c.json({ data: episode }, 201);
+});
+
+episodesRoutes.put('/:animeId/episodes/:episodeId', zValidator('json', updateEpisodeSchema), async (c) => {
+  const db = c.get('db');
+  const episodeId = Number(c.req.param('episodeId'));
+  const body = c.req.valid('json');
+  const episode = await episodeService.updateEpisode(db, episodeId, body);
+  if (!episode) return c.json({ error: { code: 404, message: 'Episode not found' } }, 404);
+  return c.json({ data: episode });
+});
+
+episodesRoutes.delete('/:animeId/episodes/:episodeId', async (c) => {
+  const db = c.get('db');
+  const episodeId = Number(c.req.param('episodeId'));
+  const deleted = await episodeService.deleteEpisode(db, episodeId);
+  if (!deleted) return c.json({ error: { code: 404, message: 'Episode not found' } }, 404);
+  return c.body(null, 204);
+});
+```
+
+Create `src/routes/genres.ts`:
+
+```typescript
+import { Hono } from 'hono';
+import { zValidator } from '@hono/zod-validator';
+import { createGenreSchema, updateGenreSchema } from '../validators/genres';
+import type { Database } from '../db/connection';
+import * as genreService from '../services/genres';
+
+export const genresRoutes = new Hono<{ Variables: { db: Database } }>();
+
+genresRoutes.get('/genres', async (c) => {
+  const db = c.get('db');
+  const genres = await genreService.listGenres(db);
+  return c.json({ data: genres });
+});
+
+genresRoutes.post('/genres', zValidator('json', createGenreSchema), async (c) => {
+  const db = c.get('db');
+  const body = c.req.valid('json');
+  const genre = await genreService.createGenre(db, body.name);
+  return c.json({ data: genre }, 201);
+});
+
+genresRoutes.put('/genres/:id', zValidator('json', updateGenreSchema), async (c) => {
+  const db = c.get('db');
+  const id = Number(c.req.param('id'));
+  const body = c.req.valid('json');
+  const genre = await genreService.updateGenre(db, id, body.name);
+  if (!genre) return c.json({ error: { code: 404, message: 'Genre not found' } }, 404);
+  return c.json({ data: genre });
+});
+
+genresRoutes.delete('/genres/:id', async (c) => {
+  const db = c.get('db');
+  const id = Number(c.req.param('id'));
+  await genreService.deleteGenre(db, id);
+  return c.body(null, 204);
+});
+```
+
+Create `src/routes/relations.ts`:
+
+```typescript
+import { Hono } from 'hono';
+import { zValidator } from '@hono/zod-validator';
+import { createRelationSchema } from '../validators/relations';
+import type { Database } from '../db/connection';
+import * as relationService from '../services/relations';
+
+export const relationsRoutes = new Hono<{ Variables: { db: Database } }>();
+
+relationsRoutes.post('/:id/relations', zValidator('json', createRelationSchema), async (c) => {
+  const db = c.get('db');
+  const sourceAnimeId = Number(c.req.param('id'));
+  const body = c.req.valid('json');
+  const relation = await relationService.createRelation(db, sourceAnimeId, body.target_anime_id, body.relation_type);
+  return c.json({ data: relation }, 201);
+});
+
+relationsRoutes.delete('/:id/relations/:relationId', async (c) => {
+  const db = c.get('db');
+  const sourceAnimeId = Number(c.req.param('id'));
+  const relationId = Number(c.req.param('relationId'));
+  const deleted = await relationService.deleteRelation(db, sourceAnimeId, relationId);
+  if (!deleted) return c.json({ error: { code: 404, message: 'Relation not found' } }, 404);
+  return c.body(null, 204);
+});
+```
 
 Create `src/routes/docs.ts`:
 
@@ -1249,7 +1538,6 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { createTestDb } from '../src/db/connection';
 import * as schema from '../src/db/schema';
-import { eq } from 'drizzle-orm';
 import { errorHandler } from '../src/middleware/error-handler';
 import { paginationMiddleware } from '../src/middleware/pagination';
 import { healthRoutes } from '../src/routes/health';
@@ -1260,66 +1548,7 @@ import { genresRoutes } from '../src/routes/genres';
 import { relationsRoutes } from '../src/routes/relations';
 
 export function createTestApp() {
-  const db = createTestDb();
-
-  // Create all tables
-  const sqlite = (db as any).$client;
-  sqlite.exec(`
-    CREATE TABLE IF NOT EXISTS anime (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      title TEXT NOT NULL,
-      alt_titles TEXT,
-      synopsis TEXT,
-      image_url TEXT,
-      media_type TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'not_yet_aired',
-      source TEXT,
-      duration INTEGER,
-      release_date TEXT,
-      rating REAL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-    CREATE TABLE IF NOT EXISTS seasons (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      anime_id INTEGER NOT NULL REFERENCES anime(id) ON DELETE CASCADE,
-      title TEXT,
-      season_number INTEGER NOT NULL,
-      episode_count INTEGER,
-      season_year INTEGER,
-      season_name TEXT,
-      start_date TEXT,
-      end_date TEXT,
-      external_rating REAL,
-      UNIQUE(anime_id, season_number)
-    );
-    CREATE TABLE IF NOT EXISTS episodes (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      anime_id INTEGER NOT NULL REFERENCES anime(id) ON DELETE CASCADE,
-      season_id INTEGER REFERENCES seasons(id) ON DELETE CASCADE,
-      episode_number INTEGER NOT NULL,
-      title TEXT,
-      duration INTEGER,
-      air_date TEXT,
-      UNIQUE(season_id, episode_number)
-    );
-    CREATE UNIQUE INDEX IF NOT EXISTS episodes_anime_id_episode_number_null_season ON episodes(anime_id, episode_number) WHERE season_id IS NULL;
-    CREATE TABLE IF NOT EXISTS genres (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL UNIQUE
-    );
-    CREATE TABLE IF NOT EXISTS anime_genres (
-      anime_id INTEGER NOT NULL REFERENCES anime(id) ON DELETE CASCADE,
-      genre_id INTEGER NOT NULL REFERENCES genres(id) ON DELETE CASCADE,
-      PRIMARY KEY (anime_id, genre_id)
-    );
-    CREATE TABLE IF NOT EXISTS anime_relations (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      source_anime_id INTEGER NOT NULL REFERENCES anime(id) ON DELETE CASCADE,
-      target_anime_id INTEGER NOT NULL REFERENCES anime(id) ON DELETE CASCADE,
-      relation_type TEXT NOT NULL
-    );
-  `);
+  const db = createTestDb(); // This handles table creation and the partial unique index
 
   const app = new Hono<{ Variables: { db: typeof db } }>();
   app.use('*', cors());
@@ -1395,20 +1624,181 @@ git commit -m "feat: add test helpers with in-memory DB setup and seed functions
 
 - [ ] **Step 1: Write anime integration tests**
 
-Create `test/anime.test.ts` with tests for:
-- `GET /api/anime` returns empty list
-- `POST /api/anime` creates anime successfully
-- `POST /api/anime` validates with Zod (missing title, invalid media_type)
-- `GET /api/anime/:id` returns anime with genres and seasons
-- `GET /api/anime/:id` returns 404 for non-existent
-- `GET /api/anime` with pagination, filters (status, media_type, genre)
-- `PUT /api/anime/:id` updates anime
-- `PUT /api/anime/:id` updates genres (replace all)
-- `DELETE /api/anime/:id` deletes anime and cascades
-- `PUT /api/anime/:id` returns 404 for non-existent
-- `DELETE /api/anime/:id` returns 404 for non-existent
+Create `test/anime.test.ts`:
 
-Each test starts with a fresh `:memory:` database via `createTestApp()`.
+```typescript
+import { describe, test, expect, beforeEach } from 'bun:test';
+import { createTestApp, seedAnime, seedGenre } from './helpers';
+
+describe('Anime API', () => {
+  let app: any;
+
+  beforeEach(() => {
+    const result = createTestApp();
+    app = result.app;
+  });
+
+  test('GET /api/anime returns empty list', async () => {
+    const res = await app.request('/api/anime');
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.data).toEqual([]);
+    expect(json.pagination.total).toBe(0);
+  });
+
+  test('POST /api/anime creates anime successfully', async () => {
+    const res = await app.request('/api/anime', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Naruto', media_type: 'tv' }),
+    });
+    const json = await res.json();
+    expect(res.status).toBe(201);
+    expect(json.data.title).toBe('Naruto');
+    expect(json.data.media_type).toBe('tv');
+    expect(json.data.id).toBeDefined();
+  });
+
+  test('POST /api/anime validates with Zod - missing title', async () => {
+    const res = await app.request('/api/anime', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ media_type: 'tv' }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  test('POST /api/anime validates with Zod - invalid media_type', async () => {
+    const res = await app.request('/api/anime', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Test', media_type: 'invalid' }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  test('POST /api/anime creates with genres', async () => {
+    const res = await app.request('/api/anime', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'One Punch Man', media_type: 'tv', genres: ['Action', 'Comedy'] }),
+    });
+    const json = await res.json();
+    expect(res.status).toBe(201);
+    expect(json.data.genres).toEqual(['Action', 'Comedy']);
+  });
+
+  test('GET /api/anime/:id returns anime with genres and seasons', async () => {
+    const createRes = await app.request('/api/anime', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Test', media_type: 'tv', genres: ['Action'] }),
+    });
+    const created = await createRes.json();
+    const id = created.data.id;
+
+    const res = await app.request(`/api/anime/${id}`);
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.data.id).toBe(id);
+    expect(json.data.genres).toBeDefined();
+    expect(json.data.seasons).toBeDefined();
+  });
+
+  test('GET /api/anime/:id returns 404 for non-existent', async () => {
+    const res = await app.request('/api/anime/9999');
+    expect(res.status).toBe(404);
+  });
+
+  test('GET /api/anime with filters', async () => {
+    await app.request('/api/anime', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Airing Anime', media_type: 'tv', status: 'airing' }),
+    });
+    await app.request('/api/anime', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Finished Anime', media_type: 'movie', status: 'finished' }),
+    });
+
+    const res = await app.request('/api/anime?status=airing');
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.data.length).toBe(1);
+    expect(json.data[0].status).toBe('airing');
+  });
+
+  test('PUT /api/anime/:id updates anime', async () => {
+    const createRes = await app.request('/api/anime', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Test', media_type: 'tv' }),
+    });
+    const created = await createRes.json();
+    const id = created.data.id;
+
+    const res = await app.request(`/api/anime/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Updated Test', status: 'finished' }),
+    });
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.data.title).toBe('Updated Test');
+    expect(json.data.status).toBe('finished');
+  });
+
+  test('PUT /api/anime/:id updates genres (replace all)', async () => {
+    const createRes = await app.request('/api/anime', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Test', media_type: 'tv', genres: ['Action'] }),
+    });
+    const created = await createRes.json();
+    const id = created.data.id;
+
+    const res = await app.request(`/api/anime/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ genres: ['Romance', 'Drama'] }),
+    });
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.data.genres.map((g: any) => g.name)).toEqual(['Romance', 'Drama']);
+  });
+
+  test('DELETE /api/anime/:id deletes anime', async () => {
+    const createRes = await app.request('/api/anime', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Test', media_type: 'tv' }),
+    });
+    const created = await createRes.json();
+    const id = created.data.id;
+
+    const res = await app.request(`/api/anime/${id}`, { method: 'DELETE' });
+    expect(res.status).toBe(204);
+
+    const getRes = await app.request(`/api/anime/${id}`);
+    expect(getRes.status).toBe(404);
+  });
+
+  test('PUT /api/anime/:id returns 404 for non-existent', async () => {
+    const res = await app.request('/api/anime/9999', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'X' }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  test('DELETE /api/anime/:id returns 404 for non-existent', async () => {
+    const res = await app.request('/api/anime/9999', { method: 'DELETE' });
+    expect(res.status).toBe(404);
+  });
+});
+```
 
 - [ ] **Step 2: Run tests**
 
@@ -1431,16 +1821,139 @@ git commit -m "test: add anime integration tests"
 
 - [ ] **Step 1: Write seasons integration tests**
 
-Create `test/seasons.test.ts` with tests for:
-- `GET /api/anime/:animeId/seasons` returns seasons for an anime
-- `POST /api/anime/:animeId/seasons` creates season, validates anime exists
-- `POST /api/anime/:animeId/seasons` validates unique season_number per anime
-- `GET /api/anime/:animeId/seasons/:seasonId` returns season with episodes
-- `PUT /api/anime/:animeId/seasons/:seasonId` updates season
-- `DELETE /api/anime/:animeId/seasons/:seasonId` deletes season (and cascades to episodes)
-- `GET /api/seasons` returns global seasons list
-- `GET /api/seasons?year=2025&name=spring` filters seasons
-- 404 cases for non-existent anime or season
+Create `test/seasons.test.ts`:
+
+```typescript
+import { describe, test, expect, beforeEach } from 'bun:test';
+import { createTestApp } from './helpers';
+
+describe('Seasons API', () => {
+  let app: any;
+  let animeId: number;
+
+  beforeEach(async () => {
+    const result = createTestApp();
+    app = result.app;
+    const res = await app.request('/api/anime', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Test Anime', media_type: 'tv' }),
+    });
+    const json = await res.json();
+    animeId = json.data.id;
+  });
+
+  test('GET /api/anime/:animeId/seasons returns empty list', async () => {
+    const res = await app.request(`/api/anime/${animeId}/seasons`);
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.data).toEqual([]);
+  });
+
+  test('POST /api/anime/:animeId/seasons creates season', async () => {
+    const res = await app.request(`/api/anime/${animeId}/seasons`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ season_number: 1, season_year: 2024, season_name: 'spring' }),
+    });
+    const json = await res.json();
+    expect(res.status).toBe(201);
+    expect(json.data.season_number).toBe(1);
+    expect(json.data.anime_id).toBe(animeId);
+  });
+
+  test('POST /api/anime/:animeId/seasons validates unique season_number', async () => {
+    await app.request(`/api/anime/${animeId}/seasons`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ season_number: 1 }),
+    });
+    const res = await app.request(`/api/anime/${animeId}/seasons`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ season_number: 1 }),
+    });
+    expect(res.status).toBe(500); // Unique constraint violation
+  });
+
+  test('GET /api/anime/:animeId/seasons/:seasonId returns season with episodes', async () => {
+    const createRes = await app.request(`/api/anime/${animeId}/seasons`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ season_number: 1 }),
+    });
+    const seasonId = (await createRes.json()).data.id;
+
+    const res = await app.request(`/api/anime/${animeId}/seasons/${seasonId}`);
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.data.id).toBe(seasonId);
+    expect(json.data.episodes).toEqual([]);
+  });
+
+  test('PUT /api/anime/:animeId/seasons/:seasonId updates season', async () => {
+    const createRes = await app.request(`/api/anime/${animeId}/seasons`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ season_number: 1 }),
+    });
+    const seasonId = (await createRes.json()).data.id;
+
+    const res = await app.request(`/api/anime/${animeId}/seasons/${seasonId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Season 1 Updated' }),
+    });
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.data.title).toBe('Season 1 Updated');
+  });
+
+  test('DELETE /api/anime/:animeId/seasons/:seasonId deletes season', async () => {
+    const createRes = await app.request(`/api/anime/${animeId}/seasons`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ season_number: 1 }),
+    });
+    const seasonId = (await createRes.json()).data.id;
+
+    const res = await app.request(`/api/anime/${animeId}/seasons/${seasonId}`, { method: 'DELETE' });
+    expect(res.status).toBe(204);
+  });
+
+  test('GET /api/seasons returns global seasons list', async () => {
+    await app.request(`/api/anime/${animeId}/seasons`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ season_number: 1, season_year: 2024, season_name: 'spring' }),
+    });
+
+    const res = await app.request('/api/seasons');
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.data.length).toBeGreaterThan(0);
+    expect(json.data[0].year).toBe(2024);
+  });
+
+  test('GET /api/seasons?year=2024&season_name=spring filters seasons', async () => {
+    await app.request(`/api/anime/${animeId}/seasons`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ season_number: 1, season_year: 2024, season_name: 'spring' }),
+    });
+
+    const res = await app.request('/api/seasons?year=2024&season_name=spring');
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.data.length).toBeGreaterThan(0);
+  });
+
+  test('GET /api/anime/:animeId/seasons/:seasonId returns 404 for non-existent', async () => {
+    const res = await app.request(`/api/anime/${animeId}/seasons/9999`);
+    expect(res.status).toBe(404);
+  });
+});
+```
 
 - [ ] **Step 2: Run tests**
 
@@ -1463,16 +1976,143 @@ git commit -m "test: add seasons integration tests"
 
 - [ ] **Step 1: Write episodes integration tests**
 
-Create `test/episodes.test.ts` with tests for:
-- `GET /api/anime/:animeId/seasons/:seasonId/episodes` lists episodes in a season
-- `GET /api/anime/:animeId/episodes` lists episodes without season (OVAs)
-- `POST /api/anime/:animeId/seasons/:seasonId/episodes` creates episode in season
-- `POST /api/anime/:animeId/episodes` creates episode without season
-- `POST /api/anime/:animeId/episodes` with season_id validates it belongs to the anime
-- Unique constraint: cannot create duplicate episode_number in same season
-- Unique constraint: cannot create duplicate episode_number for same anime without season
-- `PUT` and `DELETE` episode endpoints
-- 404 cases
+Create `test/episodes.test.ts`:
+
+```typescript
+import { describe, test, expect, beforeEach } from 'bun:test';
+import { createTestApp } from './helpers';
+
+describe('Episodes API', () => {
+  let app: any;
+  let animeId: number;
+  let seasonId: number;
+
+  beforeEach(async () => {
+    const result = createTestApp();
+    app = result.app;
+    const animeRes = await app.request('/api/anime', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Test Anime', media_type: 'tv' }),
+    });
+    animeId = (await animeRes.json()).data.id;
+
+    const seasonRes = await app.request(`/api/anime/${animeId}/seasons`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ season_number: 1 }),
+    });
+    seasonId = (await seasonRes.json()).data.id;
+  });
+
+  test('GET /api/anime/:animeId/seasons/:seasonId/episodes returns empty list', async () => {
+    const res = await app.request(`/api/anime/${animeId}/seasons/${seasonId}/episodes`);
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.data).toEqual([]);
+  });
+
+  test('POST /api/anime/:animeId/seasons/:seasonId/episodes creates episode in season', async () => {
+    const res = await app.request(`/api/anime/${animeId}/seasons/${seasonId}/episodes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ episode_number: 1, title: 'Pilot' }),
+    });
+    const json = await res.json();
+    expect(res.status).toBe(201);
+    expect(json.data.episode_number).toBe(1);
+    expect(json.data.season_id).toBe(seasonId);
+  });
+
+  test('GET /api/anime/:animeId/episodes lists episodes without season (OVAs)', async () => {
+    await app.request(`/api/anime/${animeId}/episodes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ episode_number: 1, title: 'OVA 1' }),
+    });
+
+    const res = await app.request(`/api/anime/${animeId}/episodes`);
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.data.length).toBe(1);
+    expect(json.data[0].season_id).toBeNull();
+  });
+
+  test('POST /api/anime/:animeId/episodes creates episode without season', async () => {
+    const res = await app.request(`/api/anime/${animeId}/episodes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ episode_number: 1, title: 'OVA Special' }),
+    });
+    const json = await res.json();
+    expect(res.status).toBe(201);
+    expect(json.data.season_id).toBeNull();
+  });
+
+  test('Unique constraint: duplicate episode_number in same season', async () => {
+    await app.request(`/api/anime/${animeId}/seasons/${seasonId}/episodes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ episode_number: 1 }),
+    });
+    const res = await app.request(`/api/anime/${animeId}/seasons/${seasonId}/episodes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ episode_number: 1 }),
+    });
+    expect(res.status).toBe(500); // Unique constraint violation
+  });
+
+  test('Unique constraint: duplicate episode_number for same anime without season', async () => {
+    await app.request(`/api/anime/${animeId}/episodes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ episode_number: 1 }),
+    });
+    const res = await app.request(`/api/anime/${animeId}/episodes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ episode_number: 1 }),
+    });
+    expect(res.status).toBe(500); // Unique constraint violation
+  });
+
+  test('PUT /api/anime/:animeId/seasons/:seasonId/episodes/:episodeId updates episode', async () => {
+    const createRes = await app.request(`/api/anime/${animeId}/seasons/${seasonId}/episodes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ episode_number: 1, title: 'Episode 1' }),
+    });
+    const episodeId = (await createRes.json()).data.id;
+
+    const res = await app.request(`/api/anime/${animeId}/seasons/${seasonId}/episodes/${episodeId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Updated Title' }),
+    });
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.data.title).toBe('Updated Title');
+  });
+
+  test('DELETE /api/anime/:animeId/seasons/:seasonId/episodes/:episodeId deletes episode', async () => {
+    const createRes = await app.request(`/api/anime/${animeId}/seasons/${seasonId}/episodes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ episode_number: 1 }),
+    });
+    const episodeId = (await createRes.json()).data.id;
+
+    const res = await app.request(`/api/anime/${animeId}/seasons/${seasonId}/episodes/${episodeId}`, { method: 'DELETE' });
+    expect(res.status).toBe(204);
+  });
+
+  test('404 for non-existent episode', async () => {
+    const res = await app.request(`/api/anime/${animeId}/seasons/${seasonId}/episodes/9999`);
+    expect(res.status).toBe(404);
+  });
+});
+```
 
 - [ ] **Step 2: Run tests**
 
@@ -1496,21 +2136,156 @@ git commit -m "test: add episodes integration tests"
 
 - [ ] **Step 1: Write genres tests**
 
-Create `test/genres.test.ts` with tests for:
-- `GET /api/genres` returns genres with anime_count
-- `POST /api/genres` creates genre
-- `POST /api/genres` rejects duplicate name (400)
-- `PUT /api/genres/:id` updates genre
-- `DELETE /api/genres/:id` deletes genre and cleans anime_genres
+Create `test/genres.test.ts`:
+
+```typescript
+import { describe, test, expect, beforeEach } from 'bun:test';
+import { createTestApp } from './helpers';
+
+describe('Genres API', () => {
+  let app: any;
+
+  beforeEach(() => {
+    const result = createTestApp();
+    app = result.app;
+  });
+
+  test('GET /api/genres returns empty list', async () => {
+    const res = await app.request('/api/genres');
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.data).toEqual([]);
+  });
+
+  test('POST /api/genres creates genre', async () => {
+    const res = await app.request('/api/genres', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Action' }),
+    });
+    const json = await res.json();
+    expect(res.status).toBe(201);
+    expect(json.data.name).toBe('Action');
+  });
+
+  test('POST /api/genres returns genres with anime_count', async () => {
+    await app.request('/api/genres', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Action' }),
+    });
+
+    const res = await app.request('/api/genres');
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.data.length).toBe(1);
+    expect(json.data[0].name).toBe('Action');
+    expect(json.data[0].anime_count).toBe(0);
+  });
+
+  test('PUT /api/genres/:id updates genre', async () => {
+    const createRes = await app.request('/api/genres', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Action' }),
+    });
+    const id = (await createRes.json()).data.id;
+
+    const res = await app.request(`/api/genres/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Action Updated' }),
+    });
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.data.name).toBe('Action Updated');
+  });
+
+  test('DELETE /api/genres/:id deletes genre', async () => {
+    const createRes = await app.request('/api/genres', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Action' }),
+    });
+    const id = (await createRes.json()).data.id;
+
+    const res = await app.request(`/api/genres/${id}`, { method: 'DELETE' });
+    expect(res.status).toBe(204);
+  });
+});
+```
 
 - [ ] **Step 2: Write relations tests**
 
-Create `test/relations.test.ts` with tests for:
-- `POST /api/anime/:id/relations` creates relation
-- `POST /api/anime/:id/relations` validates both anime exist
-- `POST /api/anime/:id/relations` validates relation_type enum
-- `DELETE /api/anime/:id/relations/:relationId` deletes relation
-- 404 cases
+Create `test/relations.test.ts`:
+
+```typescript
+import { describe, test, expect, beforeEach } from 'bun:test';
+import { createTestApp } from './helpers';
+
+describe('Relations API', () => {
+  let app: any;
+  let anime1Id: number;
+  let anime2Id: number;
+
+  beforeEach(async () => {
+    const result = createTestApp();
+    app = result.app;
+    const res1 = await app.request('/api/anime', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Attack on Titan', media_type: 'tv' }),
+    });
+    anime1Id = (await res1.json()).data.id;
+
+    const res2 = await app.request('/api/anime', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Attack on Titan S2', media_type: 'tv' }),
+    });
+    anime2Id = (await res2.json()).data.id;
+  });
+
+  test('POST /api/anime/:id/relations creates relation', async () => {
+    const res = await app.request(`/api/anime/${anime1Id}/relations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target_anime_id: anime2Id, relation_type: 'sequel' }),
+    });
+    const json = await res.json();
+    expect(res.status).toBe(201);
+    expect(json.data.relation_type).toBe('sequel');
+    expect(json.data.source_anime_id).toBe(anime1Id);
+    expect(json.data.target_anime_id).toBe(anime2Id);
+  });
+
+  test('POST /api/anime/:id/relations validates relation_type enum', async () => {
+    const res = await app.request(`/api/anime/${anime1Id}/relations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target_anime_id: anime2Id, relation_type: 'invalid_type' }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  test('DELETE /api/anime/:id/relations/:relationId deletes relation', async () => {
+    const createRes = await app.request(`/api/anime/${anime1Id}/relations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target_anime_id: anime2Id, relation_type: 'sequel' }),
+    });
+    const relationId = (await createRes.json()).data.id;
+
+    const res = await app.request(`/api/anime/${anime1Id}/relations/${relationId}`, { method: 'DELETE' });
+    expect(res.status).toBe(204);
+  });
+
+  test('DELETE /api/anime/:id/relations/:relationId returns 404 for non-existent', async () => {
+    const res = await app.request(`/api/anime/${anime1Id}/relations/9999`, { method: 'DELETE' });
+    expect(res.status).toBe(404);
+  });
+});
+```
 
 - [ ] **Step 3: Run all tests**
 
@@ -1535,7 +2310,154 @@ git commit -m "test: add genres and relations integration tests"
 
 - [ ] **Step 1: Create seed data**
 
-Create `src/db/seed.ts` with sample anime data (3-5 anime with seasons, episodes, and genres) for development.
+Create `src/db/seed.ts`:
+
+```typescript
+import { createDb } from './connection';
+import { anime, seasons, episodes, genres, animeGenres } from './schema';
+
+async function seed() {
+  const db = createDb();
+
+  // Insert genres
+  const [action, comedy, drama, fantasy, mecha, romance] = await db.insert(genres).values([
+    { name: 'Action' },
+    { name: 'Comedy' },
+    { name: 'Drama' },
+    { name: 'Fantasy' },
+    { name: 'Mecha' },
+    { name: 'Romance' },
+  ]).returning();
+
+  // Insert anime
+  const [opm, aot, eva, mononoke, ghibli] = await db.insert(anime).values([
+    {
+      title: 'One Punch Man',
+      altTitles: JSON.stringify({ japanese: 'ワンパンマン', english: 'One Punch Man' }),
+      synopsis: 'Saitama is a hero who can defeat any opponent with a single punch.',
+      mediaType: 'tv',
+      status: 'finished',
+      source: 'manga',
+      rating: 8.5,
+    },
+    {
+      title: 'Attack on Titan',
+      altTitles: JSON.stringify({ japanese: '進撃の巨人', english: 'Attack on Titan' }),
+      synopsis: 'Humanity lives behind walls to protect themselves from Titans.',
+      mediaType: 'tv',
+      status: 'finished',
+      source: 'manga',
+      rating: 9.0,
+    },
+    {
+      title: 'Neon Genesis Evangelion',
+      altTitles: JSON.stringify({ japanese: '新世紀エヴァンゲリオン' }),
+      synopsis: 'Teenagers pilot giant mechs to fight mysterious Angels.',
+      mediaType: 'tv',
+      status: 'finished',
+      source: 'original',
+      rating: 8.3,
+    },
+    {
+      title: 'Princess Mononoke',
+      altTitles: JSON.stringify({ japanese: 'もののけ姫' }),
+      synopsis: 'A prince is cursed and must find a cure in the forest.',
+      mediaType: 'movie',
+      status: 'finished',
+      source: 'original',
+      rating: 8.4,
+      duration: 134,
+      releaseDate: '1997-07-12',
+    },
+    {
+      title: 'Your Name',
+      altTitles: JSON.stringify({ japanese: '君の名は。', english: 'Your Name' }),
+      synopsis: 'Two teenagers discover they are swapping bodies.',
+      mediaType: 'movie',
+      status: 'finished',
+      source: 'original',
+      rating: 8.9,
+      duration: 106,
+      releaseDate: '2016-08-26',
+    },
+  ]).returning();
+
+  // Insert anime-genre associations
+  await db.insert(animeGenres).values([
+    { animeId: opm.id, genreId: action.id },
+    { animeId: opm.id, genreId: comedy.id },
+    { animeId: aot.id, genreId: action.id },
+    { animeId: aot.id, genreId: drama.id },
+    { animeId: aot.id, genreId: fantasy.id },
+    { animeId: eva.id, genreId: mecha.id },
+    { animeId: eva.id, genreId: drama.id },
+    { animeId: eva.id, genreId: action.id },
+    { animeId: mononoke.id, genreId: fantasy.id },
+    { animeId: mononoke.id, genreId: action.id },
+  ]);
+
+  // Insert seasons
+  const [opmS1, opmS2, aotS1, aotS2] = await db.insert(seasons).values([
+    {
+      animeId: opm.id,
+      title: 'One Punch Man Season 1',
+      seasonNumber: 1,
+      episodeCount: 12,
+      seasonYear: 2015,
+      seasonName: 'fall',
+      startDate: '2015-10-05',
+      endDate: '2015-12-21',
+      externalRating: 8.72,
+    },
+    {
+      animeId: opm.id,
+      title: 'One Punch Man Season 2',
+      seasonNumber: 2,
+      episodeCount: 12,
+      seasonYear: 2019,
+      seasonName: 'spring',
+      startDate: '2019-04-09',
+      endDate: '2019-07-02',
+      externalRating: 7.14,
+    },
+    {
+      animeId: aot.id,
+      title: 'Attack on Titan Season 1',
+      seasonNumber: 1,
+      episodeCount: 25,
+      seasonYear: 2013,
+      seasonName: 'spring',
+      startDate: '2013-04-07',
+      endDate: '2013-09-29',
+      externalRating: 8.54,
+    },
+    {
+      animeId: aot.id,
+      title: 'Attack on Titan Season 2',
+      seasonNumber: 2,
+      episodeCount: 12,
+      seasonYear: 2017,
+      seasonName: 'spring',
+      startDate: '2017-04-01',
+      endDate: '2017-06-17',
+      externalRating: 8.61,
+    },
+  ]).returning();
+
+  // Insert episodes
+  await db.insert(episodes).values([
+    { animeId: opm.id, seasonId: opmS1.id, episodeNumber: 1, title: 'The Strongest Man', duration: 24, airDate: '2015-10-05' },
+    { animeId: opm.id, seasonId: opmS1.id, episodeNumber: 2, title: 'The Lone Cyborg', duration: 24, airDate: '2015-10-11' },
+    { animeId: opm.id, seasonId: opmS2.id, episodeNumber: 1, title: 'Starting Over', duration: 24, airDate: '2019-04-09' },
+    { animeId: aot.id, seasonId: aotS1.id, episodeNumber: 1, title: 'To You, 2000 Years in the Future', duration: 24, airDate: '2013-04-07' },
+    { animeId: aot.id, seasonId: aotS1.id, episodeNumber: 2, title: 'That Day', duration: 24, airDate: '2013-04-14' },
+  ]);
+
+  console.log('Seed data inserted successfully!');
+}
+
+seed().catch(console.error);
+```
 
 - [ ] **Step 2: Add seed script to package.json**
 
