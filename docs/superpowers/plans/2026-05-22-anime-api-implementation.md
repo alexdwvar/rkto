@@ -65,7 +65,7 @@ drizzle.config.ts      # Drizzle kit config
 Create `src/db/schema.ts` with all 6 tables (anime, seasons, episodes, genres, anime_genres, anime_relations) and their relations.
 
 ```typescript
-import { sqliteTable, text, integer, real, uniqueIndex, index } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, real, uniqueIndex, primaryKey, index } from 'drizzle-orm/sqlite-core';
 import { relations } from 'drizzle-orm';
 
 export const anime = sqliteTable('anime', {
@@ -80,8 +80,8 @@ export const anime = sqliteTable('anime', {
   duration: integer('duration'),
   releaseDate: text('release_date'),
   rating: real('rating'),
-  createdAt: text('created_at').notNull().default('(datetime(\'now\'))'),
-  updatedAt: text('updated_at').notNull().default('(datetime(\'now\'))'),
+  createdAt: text('created_at').notNull().default("(datetime('now'))"),
+  updatedAt: text('updated_at').notNull().default("(datetime('now'))"),
 });
 
 export const seasons = sqliteTable('seasons', {
@@ -109,7 +109,9 @@ export const episodes = sqliteTable('episodes', {
   airDate: text('air_date'),
 }, (table) => [
   uniqueIndex('episodes_season_id_episode_number_unique').on(table.seasonId, table.episodeNumber),
-  uniqueIndex('episodes_anime_id_episode_number_unique').on(table.animeId, table.episodeNumber),
+  // NOTE: The partial unique index for (anime_id, episode_number) WHERE season_id IS NULL
+  // is NOT supported by Drizzle's uniqueIndex. This must be created via raw SQL in migrations:
+  // CREATE UNIQUE INDEX episodes_anime_id_episode_number_null_season ON episodes(anime_id, episode_number) WHERE season_id IS NULL;
 ]);
 
 export const genres = sqliteTable('genres', {
@@ -121,10 +123,10 @@ export const animeGenres = sqliteTable('anime_genres', {
   animeId: integer('anime_id').notNull().references(() => anime.id, { onDelete: 'cascade' }),
   genreId: integer('genre_id').notNull().references(() => genres.id, { onDelete: 'cascade' }),
 }, (table) => [
-  // Composite primary key via unique index since sqliteTable doesn't support composite PK easily
+  primaryKey({ columns: [table.animeId, table.genreId] }),
 ]);
 
-export const animeRelations = sqliteTable('anime_relations', {
+export const animeRelationsTable = sqliteTable('anime_relations', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   sourceAnimeId: integer('source_anime_id').notNull().references(() => anime.id, { onDelete: 'cascade' }),
   targetAnimeId: integer('target_anime_id').notNull().references(() => anime.id, { onDelete: 'cascade' }),
@@ -132,11 +134,11 @@ export const animeRelations = sqliteTable('anime_relations', {
 });
 
 // Drizzle relations
-export const animeRelations2 = relations(anime, ({ many }) => ({
+export const animeRelations = relations(anime, ({ many }) => ({
   seasons: many(seasons),
   genres: many(animeGenres),
-  sourceRelations: many(animeRelations, { relationName: 'source' }),
-  targetRelations: many(animeRelations, { relationName: 'target' }),
+  sourceRelations: many(animeRelationsTable, { relationName: 'source' }),
+  targetRelations: many(animeRelationsTable, { relationName: 'target' }),
 }));
 
 export const seasonsRelations = relations(seasons, ({ one, many }) => ({
@@ -158,13 +160,16 @@ export const animeGenresRelations = relations(animeGenres, ({ one }) => ({
   genre: one(genres, { fields: [animeGenres.genreId], references: [genres.id] }),
 }));
 
-export const animeRelationsRelations = relations(animeRelations, ({ one }) => ({
-  sourceAnime: one(anime, { fields: [animeRelations.sourceAnimeId], references: [anime.id], relationName: 'source' }),
-  targetAnime: one(anime, { fields: [animeRelations.targetAnimeId], references: [anime.id], relationName: 'target' }),
+export const animeRelationsTableRelations = relations(animeRelationsTable, ({ one }) => ({
+  sourceAnime: one(anime, { fields: [animeRelationsTable.sourceAnimeId], references: [anime.id], relationName: 'source' }),
+  targetAnime: one(anime, { fields: [animeRelationsTable.targetAnimeId], references: [anime.id], relationName: 'target' }),
 }));
 ```
 
-**Note:** The `animeGenres` table uses a unique index as composite primary key. In Drizzle with SQLite, you define this with a separate unique index or use the `primaryKey` helper. Verify the exact syntax in Drizzle docs before implementing.
+**Important notes:**
+1. `animeGenres` uses `primaryKey()` helper for composite PK — this is the correct Drizzle API for SQLite composite primary keys.
+2. `animeRelationsTable` is the table (renamed to avoid collision with the Drizzle `relations` export). All service code must import `animeRelationsTable` instead of `animeRelations`.
+3. The partial unique index `(anime_id, episode_number) WHERE season_id IS NULL` cannot be created via Drizzle's `uniqueIndex`. It must be added via raw SQL in migration or DB initialization: `CREATE UNIQUE INDEX episodes_anime_id_episode_number_null_season ON episodes(anime_id, episode_number) WHERE season_id IS NULL;`
 
 - [ ] **Step 2: Create the DB connection helper**
 
@@ -179,12 +184,16 @@ export function createDb(filename: string = 'anime.db') {
   const sqlite = new Database(filename);
   sqlite.pragma('journal_mode = WAL');
   sqlite.pragma('foreign_keys = ON');
+  // Create partial unique index that Drizzle can't define in schema
+  sqlite.exec('CREATE UNIQUE INDEX IF NOT EXISTS episodes_anime_id_episode_number_null_season ON episodes(anime_id, episode_number) WHERE season_id IS NULL');
   return drizzle(sqlite, { schema });
 }
 
 export function createTestDb() {
   const sqlite = new Database(':memory:');
   sqlite.pragma('foreign_keys = ON');
+  // Create partial unique index that Drizzle can't define in schema
+  sqlite.exec('CREATE UNIQUE INDEX IF NOT EXISTS episodes_anime_id_episode_number_null_season ON episodes(anime_id, episode_number) WHERE season_id IS NULL');
   return drizzle(sqlite, { schema });
 }
 
@@ -295,7 +304,7 @@ export const updateSeasonSchema = createSeasonSchema.partial();
 
 export const seasonListQuerySchema = z.object({
   year: z.coerce.number().int().optional(),
-  name: z.enum(['winter', 'spring', 'summer', 'fall']).optional(),
+  season_name: z.enum(['winter', 'spring', 'summer', 'fall']).optional(),
 });
 ```
 
@@ -449,7 +458,7 @@ Start with genres because anime create depends on genre resolution.
 Create `src/services/genres.ts`:
 
 ```typescript
-import { eq, sql } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import type { Database } from '../db/connection';
 import { genres, animeGenres } from '../db/schema';
 
@@ -489,7 +498,7 @@ export async function deleteGenre(db: Database, id: number) {
  */
 export async function resolveGenreNames(db: Database, names: string[]): Promise<number[]> {
   if (names.length === 0) return [];
-  const existing = await db.select().from(genres).where(sql`${genres.name} IN ${names}`);
+  const existing = await db.select().from(genres).where(inArray(genres.name, names));
   const existingMap = new Map(existing.map((g) => [g.name, g.id]));
 
   const missing = names.filter((n) => !existingMap.has(n));
@@ -521,11 +530,12 @@ git commit -m "feat: add genres service with name resolution"
 Create `src/services/anime.ts`:
 
 ```typescript
-import { eq, sql, like, and, or, desc, asc } from 'drizzle-orm';
+import { eq, sql, like, and, or, desc, asc, inArray } from 'drizzle-orm';
 import type { Database } from '../db/connection';
-import { anime, seasons, episodes, animeGenres, animeRelations, genres } from '../db/schema';
+import { anime, seasons, animeGenres, animeRelationsTable, genres } from '../db/schema';
 import { resolveGenreNames } from './genres';
-import type { paginateResponse } from '../middleware/pagination';
+import { updateAnimeSchema } from '../validators/anime';
+import type { z } from 'zod';
 
 export async function listAnime(
   db: Database,
@@ -554,45 +564,42 @@ export async function listAnime(
   if (options.status) {
     conditions.push(eq(anime.status, options.status));
   }
-  if (options.season_year || options.season_name) {
-    const seasonConditions = [];
-    if (options.season_year) {
-      conditions.push(sql`EXISTS (SELECT 1 FROM seasons WHERE seasons.anime_id = anime.id AND seasons.season_year = ${options.season_year})`);
-    }
-    if (options.season_name) {
-      conditions.push(sql`EXISTS (SELECT 1 FROM seasons WHERE seasons.anime_id = anime.id AND seasons.season_name = ${options.season_name})`);
-    }
+  if (options.season_year) {
+    conditions.push(sql`EXISTS (SELECT 1 FROM seasons WHERE seasons.anime_id = anime.id AND seasons.season_year = ${options.season_year})`);
+  }
+  if (options.season_name) {
+    conditions.push(sql`EXISTS (SELECT 1 FROM seasons WHERE seasons.anime_id = anime.id AND seasons.season_name = ${options.season_name})`);
   }
 
-  const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
-
-  // Genre filtering requires join
+  // Genre filtering: find anime IDs that have ALL specified genres
   if (options.genre) {
     const genreNames = options.genre.split(',');
     const genreIds = await resolveGenreNames(db, genreNames);
     if (genreIds.length > 0) {
-      const animeIds = await db
+      const matchingAnimeIds = await db
         .select({ animeId: animeGenres.animeId })
         .from(animeGenres)
-        .where(sql`${animeGenres.genreId} IN ${genreIds}`)
+        .where(inArray(animeGenres.genreId, genreIds))
         .groupBy(animeGenres.animeId)
-        .having(sql`count(DISTINCT ${animeGenres.genreId}) = ${genreIds.length}`);
-      const ids = animeIds.map((r) => r.animeId);
-      if (ids.length === 0) return { data: [], pagination: { page: options.page, limit: options.limit, total: 0, total_pages: 0 } };
-      conditions.push(sql`${anime.id} IN ${ids}`);
+        .having(sql`count(distinct ${animeGenres.genreId}) = ${genreIds.length}`);
+      if (matchingAnimeIds.length === 0) {
+        return { data: [], pagination: { page: options.page, limit: options.limit, total: 0, total_pages: 0 } };
+      }
+      conditions.push(inArray(anime.id, matchingAnimeIds.map((r) => r.animeId)));
     }
   }
+
+  const where = conditions.length > 0 ? and(...conditions) : undefined;
 
   const sortColumn = options.sort === 'title' ? anime.title : options.sort === 'rating' ? anime.rating : anime.createdAt;
   const orderFn = options.order === 'asc' ? asc : desc;
 
-  const totalResult = await db.select({ count: sql<number>`count(*)` }).from(anime).where(conditions.length > 0 ? and(...conditions) : undefined).get();
-  const total = totalResult?.count ?? 0;
-
+  const [{ count: total }] = await db.select({ count: sql<number>`count(*)` }).from(anime).where(where);
+  
   const results = await db
     .select()
     .from(anime)
-    .where(conditions.length > 0 ? and(...conditions) : undefined)
+    .where(where)
     .orderBy(orderFn(sortColumn))
     .limit(options.limit)
     .offset(options.offset);
@@ -605,11 +612,11 @@ export async function listAnime(
         .from(animeGenres)
         .innerJoin(genres, eq(animeGenres.genreId, genres.id))
         .where(eq(animeGenres.animeId, a.id));
-      const seasonCount = await db.select({ count: sql<number>`count(*)` }).from(seasons).where(eq(seasons.animeId, a.id)).get();
+      const [{ count: seasonCount }] = await db.select({ count: sql<number>`count(*)` }).from(seasons).where(eq(seasons.animeId, a.id));
       return {
         ...mapAnimeRow(a),
         genres: genreList.map((g) => g.name),
-        season_count: seasonCount?.count ?? 0,
+        season_count: seasonCount,
       };
     })
   );
@@ -641,11 +648,11 @@ export async function getAnimeById(db: Database, id: number) {
     .select({
       id: anime.id,
       title: anime.title,
-      relation_type: animeRelations.relationType,
+      relation_type: animeRelationsTable.relationType,
     })
-    .from(animeRelations)
-    .innerJoin(anime, eq(animeRelations.targetAnimeId, anime.id))
-    .where(eq(animeRelations.sourceAnimeId, id));
+    .from(animeRelationsTable)
+    .innerJoin(anime, eq(animeRelationsTable.targetAnimeId, anime.id))
+    .where(eq(animeRelationsTable.sourceAnimeId, id));
 
   return {
     ...mapAnimeRow(result),
@@ -691,7 +698,7 @@ export async function createAnime(db: Database, data: {
   return getAnimeById(db, result.id);
 }
 
-export async function updateAnime(db: Database, id: number, data: Record<string, unknown>) {
+export async function updateAnime(db: Database, id: number, data: z.infer<typeof updateAnimeSchema>) {
   const existing = await db.select().from(anime).where(eq(anime.id, id)).get();
   if (!existing) return null;
 
@@ -791,14 +798,15 @@ import type { Database } from '../db/connection';
 import { seasons, episodes } from '../db/schema';
 
 export async function listSeasonsByAnime(db: Database, animeId: number) {
-  return db.select().from(seasons).where(eq(seasons.animeId, animeId));
+  const results = await db.select().from(seasons).where(eq(seasons.animeId, animeId));
+  return results.map(mapSeasonRow);
 }
 
 export async function getSeasonById(db: Database, animeId: number, seasonId: number) {
   const season = await db.select().from(seasons).where(and(eq(seasons.id, seasonId), eq(seasons.animeId, animeId))).get();
   if (!season) return null;
   const episodeList = await db.select().from(episodes).where(eq(episodes.seasonId, seasonId));
-  return { ...season, episodes: episodeList };
+  return { ...mapSeasonRow(season), episodes: episodeList.map(mapEpisodeRow) };
 }
 
 export async function createSeason(db: Database, animeId: number, data: {
@@ -850,10 +858,10 @@ export async function deleteSeason(db: Database, animeId: number, seasonId: numb
   return true;
 }
 
-export async function listGlobalSeasons(db: Database, filters: { year?: number; name?: string }) {
+export async function listGlobalSeasons(db: Database, filters: { year?: number; season_name?: string }) {
   const conditions = [];
   if (filters.year) conditions.push(eq(seasons.seasonYear, filters.year));
-  if (filters.name) conditions.push(eq(seasons.seasonName, filters.name));
+  if (filters.season_name) conditions.push(eq(seasons.seasonName, filters.season_name));
   const where = conditions.length > 0 ? and(...conditions) : undefined;
 
   return db
@@ -867,6 +875,33 @@ export async function listGlobalSeasons(db: Database, filters: { year?: number; 
     .groupBy(seasons.seasonYear, seasons.seasonName)
     .orderBy(seasons.seasonYear, seasons.seasonNumber);
 }
+
+function mapSeasonRow(row: typeof seasons.$inferSelect) {
+  return {
+    id: row.id,
+    anime_id: row.animeId,
+    title: row.title,
+    season_number: row.seasonNumber,
+    episode_count: row.episodeCount,
+    season_year: row.seasonYear,
+    season_name: row.seasonName,
+    start_date: row.startDate,
+    end_date: row.endDate,
+    external_rating: row.externalRating,
+  };
+}
+
+function mapEpisodeRow(row: typeof episodes.$inferSelect) {
+  return {
+    id: row.id,
+    anime_id: row.animeId,
+    season_id: row.seasonId,
+    episode_number: row.episodeNumber,
+    title: row.title,
+    duration: row.duration,
+    air_date: row.airDate,
+  };
+}
 ```
 
 - [ ] **Step 2: Write the episodes service**
@@ -878,16 +913,31 @@ import { eq, and, isNull } from 'drizzle-orm';
 import type { Database } from '../db/connection';
 import { episodes } from '../db/schema';
 
+function mapEpisodeRow(row: typeof episodes.$inferSelect) {
+  return {
+    id: row.id,
+    anime_id: row.animeId,
+    season_id: row.seasonId,
+    episode_number: row.episodeNumber,
+    title: row.title,
+    duration: row.duration,
+    air_date: row.airDate,
+  };
+}
+
 export async function listEpisodesBySeason(db: Database, seasonId: number) {
-  return db.select().from(episodes).where(eq(episodes.seasonId, seasonId));
+  const results = await db.select().from(episodes).where(eq(episodes.seasonId, seasonId));
+  return results.map(mapEpisodeRow);
 }
 
 export async function listEpisodesByAnime(db: Database, animeId: number) {
-  return db.select().from(episodes).where(and(eq(episodes.animeId, animeId), isNull(episodes.seasonId)));
+  const results = await db.select().from(episodes).where(and(eq(episodes.animeId, animeId), isNull(episodes.seasonId)));
+  return results.map(mapEpisodeRow);
 }
 
 export async function getEpisodeById(db: Database, episodeId: number) {
-  return db.select().from(episodes).where(eq(episodes.id, episodeId)).get() ?? null;
+  const result = await db.select().from(episodes).where(eq(episodes.id, episodeId)).get();
+  return result ? mapEpisodeRow(result) : null;
 }
 
 export async function createEpisode(db: Database, animeId: number, data: {
@@ -905,7 +955,7 @@ export async function createEpisode(db: Database, animeId: number, data: {
     duration: data.duration,
     airDate: data.air_date,
   }).returning().get();
-  return result;
+  return mapEpisodeRow(result);
 }
 
 export async function updateEpisode(db: Database, episodeId: number, data: Record<string, unknown>) {
@@ -935,10 +985,10 @@ Create `src/services/relations.ts`:
 ```typescript
 import { eq, and } from 'drizzle-orm';
 import type { Database } from '../db/connection';
-import { animeRelations } from '../db/schema';
+import { animeRelationsTable } from '../db/schema';
 
 export async function createRelation(db: Database, sourceAnimeId: number, targetAnimeId: number, relationType: string) {
-  const result = await db.insert(animeRelations).values({
+  const result = await db.insert(animeRelationsTable).values({
     sourceAnimeId,
     targetAnimeId,
     relationType,
@@ -947,11 +997,11 @@ export async function createRelation(db: Database, sourceAnimeId: number, target
 }
 
 export async function deleteRelation(db: Database, sourceAnimeId: number, relationId: number) {
-  const existing = await db.select().from(animeRelations).where(
-    and(eq(animeRelations.id, relationId), eq(animeRelations.sourceAnimeId, sourceAnimeId))
+  const existing = await db.select().from(animeRelationsTable).where(
+    and(eq(animeRelationsTable.id, relationId), eq(animeRelationsTable.sourceAnimeId, sourceAnimeId))
   ).get();
   if (!existing) return false;
-  await db.delete(animeRelations).where(eq(animeRelations.id, relationId));
+  await db.delete(animeRelationsTable).where(eq(animeRelationsTable.id, relationId));
   return true;
 }
 ```
@@ -1253,6 +1303,7 @@ export function createTestApp() {
       air_date TEXT,
       UNIQUE(season_id, episode_number)
     );
+    CREATE UNIQUE INDEX IF NOT EXISTS episodes_anime_id_episode_number_null_season ON episodes(anime_id, episode_number) WHERE season_id IS NULL;
     CREATE TABLE IF NOT EXISTS genres (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL UNIQUE
