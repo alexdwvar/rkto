@@ -1,6 +1,6 @@
 import { eq, and, sql } from 'drizzle-orm';
 import type { Database } from '../db/connection';
-import { seasons, episodes } from '../db/schema';
+import { anime, seasons, episodes } from '../db/schema';
 
 export async function listSeasonsByAnime(db: Database, animeId: number) {
   const results = await db.select().from(seasons).where(eq(seasons.animeId, animeId));
@@ -24,6 +24,9 @@ export async function createSeason(db: Database, animeId: number, data: {
   end_date?: string;
   external_rating?: number;
 }) {
+  const existingAnime = await db.select({ id: anime.id }).from(anime).where(eq(anime.id, animeId)).get();
+  if (!existingAnime) return null;
+
   const result = await db.insert(seasons).values({
     animeId,
     title: data.title,

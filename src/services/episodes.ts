@@ -1,6 +1,6 @@
 import { eq, and, isNull } from 'drizzle-orm';
 import type { Database } from '../db/connection';
-import { episodes } from '../db/schema';
+import { anime, seasons, episodes } from '../db/schema';
 
 function mapEpisodeRow(row: typeof episodes.$inferSelect) {
   return {
@@ -36,6 +36,16 @@ export async function createEpisode(db: Database, animeId: number, data: {
   air_date?: string;
   season_id?: number;
 }) {
+  const existingAnime = await db.select({ id: anime.id }).from(anime).where(eq(anime.id, animeId)).get();
+  if (!existingAnime) return null;
+
+  if (data.season_id) {
+    const season = await db.select({ id: seasons.id, animeId: seasons.animeId })
+      .from(seasons).where(eq(seasons.id, data.season_id)).get();
+    if (!season) throw new Error('Season not found');
+    if (season.animeId !== animeId) throw new Error('Season does not belong to this anime');
+  }
+
   const result = await db.insert(episodes).values({
     animeId,
     seasonId: data.season_id ?? null,
@@ -48,6 +58,9 @@ export async function createEpisode(db: Database, animeId: number, data: {
 }
 
 export async function updateEpisode(db: Database, episodeId: number, data: Record<string, unknown>) {
+  const existing = await db.select().from(episodes).where(eq(episodes.id, episodeId)).get();
+  if (!existing) return null;
+
   const updateData: Record<string, unknown> = {};
   if (data.episode_number !== undefined) updateData.episodeNumber = data.episode_number;
   if (data.title !== undefined) updateData.title = data.title;

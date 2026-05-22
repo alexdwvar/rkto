@@ -8,41 +8,44 @@ REST API for an anime catalog built with Hono + Drizzle + SQLite on Bun. The ful
 
 - **Runtime**: Bun (native, not Node). Run scripts with `bun`, test with `bun test`.
 - **Framework**: Hono
-- **ORM**: Drizzle with SQLite (better-sqlite3 driver)
-- **Validation**: Zod via `@hono/zod-openapi` or Hono's `zValidator`
+- **ORM**: Drizzle with SQLite (bun:sqlite driver — better-sqlite3 doesn't work in Bun)
+- **Validation**: Zod via `@hono/zod-validator`
 - **Testing**: `bun test` with SQLite `:memory:` databases. Tests instantiate Hono app via `app.request()`, no HTTP server.
 
 ## Project Structure
+
+Add `src/routes/docs.ts` to the project structure and update:
 
 ```
 src/
   db/
     schema.ts          # Drizzle schema definitions
-    connection.ts       # DB connection + migration setup
-    seed.ts             # Seed data for development
+    connection.ts       # DB connection + pushSchema (bun:sqlite)
+    seed.ts             # Seed data for development (clears tables before inserting)
   routes/
-    anime.ts            # Anime endpoints
-    seasons.ts          # Season endpoints (nested under anime + global /api/seasons)
-    episodes.ts         # Episode endpoints (nested under anime/seasons)
-    genres.ts           # Genre CRUD
-    relations.ts        # Anime relation endpoints
-    health.ts           # Health check
+    anime.ts            # Anime endpoints (/anime, /anime/:id)
+    seasons.ts          # Season endpoints (/anime/:animeId/seasons, /seasons)
+    episodes.ts         # Episode endpoints (/anime/:animeId/episodes, /anime/:animeId/seasons/:seasonId/episodes)
+    genres.ts           # Genre CRUD (/genres)
+    relations.ts        # Anime relation endpoints (/anime/:id/relations)
+    health.ts           # Health check (/health)
+    docs.ts             # API docs (markdown) (/docs)
   services/
-    anime.ts            # Anime business logic
-    seasons.ts
-    episodes.ts
-    genres.ts
-    relations.ts
+    anime.ts            # Anime business logic (batch queries for list, mapAnimeRow)
+    seasons.ts          # Season business logic (validates animeId before create)
+    episodes.ts         # Episode business logic (validates animeId + seasonId ownership)
+    genres.ts           # Genre business logic (name resolution, auto-create, mapGenreRow)
+    relations.ts        # Relation business logic (validates source+target anime exist)
   middleware/
-    error-handler.ts    # Global error handling
-    pagination.ts       # Pagination query parsing
+    error-handler.ts    # Global error handling (Zod 400, UNIQUE 409, FK 400, not found 404)
+    pagination.ts       # Pagination query parsing (unused in current routes, kept for future)
   validators/
     anime.ts            # Zod schemas for request validation
     seasons.ts
     episodes.ts
     genres.ts
     relations.ts
-  index.ts              # App entry point
+  index.ts              # App entry point (CORS, middleware, route registration)
 test/
   helpers.ts            # Test DB setup, app instance, seed helpers
   anime.test.ts
@@ -58,10 +61,19 @@ test/
 - Response format: `{ data: ... }` for individual, `{ data: [...], pagination: {...} }` for lists
 - Error format: `{ error: { code: 404, message: "Anime not found" } }`
 - Validation errors return 400 with Zod error details
-- Use Drizzle schema types, never raw SQL unless absolutely necessary
+- Foreign key violations return 400 with clear messages
+- Like search patterns escape `%` and `_` to prevent LIKE injection
+- Services validate FK existence before insert (anime for seasons, anime+season for episodes, anime for relations)
+- `listAnime` uses batch queries instead of N+1 per-anime queries
+- Genre delete returns 404 if not found (consistent with anime/season delete)
+- Services return snake_case in API responses — `mapXxxRow` helpers convert Drizzle camelCase columns to snake_case
+- Relations service `createRelation` returns `mapRelationRow` with snake_case keys
+- Genre list endpoint returns `anime_count` (mapped from Drizzle's `animeCount`)
+- Anime `getAnimeById` returns `genres` as string array (names only), not objects
+- DB tables created via `pushSchema()` function with raw DDL in connection.ts
 - Every write endpoint must have a Zod validator
 - Services contain business logic, routes are thin handlers that call services
-- DB connection is injected into the app context via Hono middleware
+- Hono routes must use full path prefixes (e.g., `/anime/:id` not `/:id`) — `app.route()` does not namespace by sub-app
 - All timestamps are ISO strings stored as text in SQLite
 - `alt_titles` is stored as JSON text column, parsed/stringified at the service layer
 - Genres are passed as names (strings) in anime create/update, not as IDs. The service resolves names → IDs and auto-creates genres that don't exist.
@@ -88,7 +100,7 @@ test/
 - `bun test --watch` — Run tests in watch mode
 - `bun run db:generate` — Generate Drizzle migrations
 - `bun run db:migrate` — Run migrations
-- `bun run db:studio` — Open Drizzle Studio
+- `bun run db:seed` — Seed the database with sample data
 
 ## API Documentation
 

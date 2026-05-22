@@ -1,11 +1,11 @@
-import Database from 'better-sqlite3';
-import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { Database } from 'bun:sqlite';
+import { drizzle } from 'drizzle-orm/bun-sqlite';
 import * as schema from './schema';
 
 export function createDb(filename: string = 'anime.db') {
   const sqlite = new Database(filename);
-  sqlite.pragma('journal_mode = WAL');
-  sqlite.pragma('foreign_keys = ON');
+  sqlite.exec('PRAGMA journal_mode = WAL');
+  sqlite.exec('PRAGMA foreign_keys = ON');
   const db = drizzle(sqlite, { schema });
   pushSchema(sqlite);
   sqlite.exec('CREATE UNIQUE INDEX IF NOT EXISTS episodes_anime_id_episode_number_null_season ON episodes(anime_id, episode_number) WHERE season_id IS NULL');
@@ -14,14 +14,14 @@ export function createDb(filename: string = 'anime.db') {
 
 export function createTestDb() {
   const sqlite = new Database(':memory:');
-  sqlite.pragma('foreign_keys = ON');
+  sqlite.exec('PRAGMA foreign_keys = ON');
   const db = drizzle(sqlite, { schema });
   pushSchema(sqlite);
   sqlite.exec('CREATE UNIQUE INDEX IF NOT EXISTS episodes_anime_id_episode_number_null_season ON episodes(anime_id, episode_number) WHERE season_id IS NULL');
   return db;
 }
 
-function pushSchema(sqlite: Database.Database) {
+function pushSchema(sqlite: Database) {
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS anime (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

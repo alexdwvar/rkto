@@ -1,2 +1,5 @@
 # deps
 node_modules/
+anime.db
+anime.db-shm
+anime.db-wal

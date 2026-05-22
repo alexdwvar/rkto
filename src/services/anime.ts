@@ -5,6 +5,10 @@ import { resolveGenreNames } from './genres';
 import { updateAnimeSchema } from '../validators/anime';
 import type { z } from 'zod';
 
+function escapeLike(str: string): string {
+  return str.replace(/[%_]/g, '\\$&');
+}
+
 export async function listAnime(
   db: Database,
   options: {
@@ -24,7 +28,7 @@ export async function listAnime(
   const conditions = [];
 
   if (options.search) {
-    conditions.push(or(like(anime.title, `%${options.search}%`), like(anime.altTitles, `%${options.search}%`)));
+    conditions.push(or(like(anime.title, `%${escapeLike(options.search)}%`), like(anime.altTitles, `%${escapeLike(options.search)}%`)));
   }
   if (options.media_type) {
     conditions.push(eq(anime.mediaType, options.media_type));
@@ -71,21 +75,40 @@ export async function listAnime(
     .limit(options.limit)
     .offset(options.offset);
 
-  const animeWithGenres = await Promise.all(
-    results.map(async (a) => {
-      const genreList = await db
-        .select({ name: genres.name })
+  const animeIds = results.map((a) => a.id);
+
+  const genreRows = animeIds.length > 0
+    ? await db
+        .select({ animeId: animeGenres.animeId, name: genres.name })
         .from(animeGenres)
         .innerJoin(genres, eq(animeGenres.genreId, genres.id))
-        .where(eq(animeGenres.animeId, a.id));
-      const [{ count: seasonCount }] = await db.select({ count: sql<number>`count(*)` }).from(seasons).where(eq(seasons.animeId, a.id));
-      return {
-        ...mapAnimeRow(a),
-        genres: genreList.map((g) => g.name),
-        season_count: seasonCount,
-      };
-    })
-  );
+        .where(inArray(animeGenres.animeId, animeIds))
+    : [];
+
+  const seasonCounts = animeIds.length > 0
+    ? await db
+        .select({ animeId: seasons.animeId, count: sql<number>`count(*)`.as('count') })
+        .from(seasons)
+        .where(inArray(seasons.animeId, animeIds))
+        .groupBy(seasons.animeId)
+    : [];
+
+  const genreMap = new Map<number, string[]>();
+  for (const row of genreRows) {
+    if (!genreMap.has(row.animeId)) genreMap.set(row.animeId, []);
+    genreMap.get(row.animeId)!.push(row.name);
+  }
+
+  const seasonCountMap = new Map<number, number>();
+  for (const row of seasonCounts) {
+    seasonCountMap.set(row.animeId, row.count);
+  }
+
+  const animeWithGenres = results.map((a) => ({
+    ...mapAnimeRow(a),
+    genres: genreMap.get(a.id) ?? [],
+    season_count: seasonCountMap.get(a.id) ?? 0,
+  }));
 
   return {
     data: animeWithGenres,
@@ -122,7 +145,7 @@ export async function getAnimeById(db: Database, id: number) {
 
   return {
     ...mapAnimeRow(result),
-    genres: genreList,
+    genres: genreList.map(g => g.name),
     seasons: seasonList.map(mapSeasonRow),
     relations: relationsList,
   };
