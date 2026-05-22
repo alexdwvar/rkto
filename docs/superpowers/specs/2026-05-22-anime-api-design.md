@@ -67,7 +67,7 @@ test/
 | synopsis | text | | Sinopsis/descripción |
 | image_url | text | | URL del poster |
 | media_type | text | NOT NULL | tv, movie, ova, ona, special |
-| status | text | NOT NULL, default 'not_yet_aired' | airing, finished, not_yet_aired, cancelled |
+| status | text | NOT NULL, default 'not_yet_aired' | airing, finished, not_yet_aired, paused, cancelled |
 | source | text | | manga, light_novel, original, game, etc. |
 | duration | integer | | Minutos totales (para películas, specials) |
 | release_date | text | ISO date | Fecha para lo que no tiene temporadas |
@@ -145,7 +145,7 @@ export const createAnimeSchema = z.object({
   synopsis: z.string().optional(),
   image_url: z.string().url().optional(),
   media_type: z.enum(['tv', 'movie', 'ova', 'ona', 'special']),
-  status: z.enum(['airing', 'finished', 'not_yet_aired', 'cancelled']).default('not_yet_aired'),
+  status: z.enum(['airing', 'finished', 'not_yet_aired', 'paused', 'cancelled']).default('not_yet_aired'),
   source: z.enum(['manga', 'light_novel', 'original', 'game', 'other']).optional(),
   duration: z.number().int().positive().optional(),
   release_date: z.string().optional(),
@@ -159,7 +159,7 @@ export const updateAnimeSchema = z.object({
   synopsis: z.string().optional(),
   image_url: z.string().url().optional(),
   media_type: z.enum(['tv', 'movie', 'ova', 'ona', 'special']).optional(),
-  status: z.enum(['airing', 'finished', 'not_yet_aired', 'cancelled']).optional(),
+  status: z.enum(['airing', 'finished', 'not_yet_aired', 'paused', 'cancelled']).optional(),
   source: z.enum(['manga', 'light_novel', 'original', 'game', 'other']).optional(),
   duration: z.number().int().positive().optional(),
   release_date: z.string().optional(),

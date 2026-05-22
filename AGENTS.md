@@ -65,6 +65,7 @@ test/
 - All timestamps are ISO strings stored as text in SQLite
 - `alt_titles` is stored as JSON text column, parsed/stringified at the service layer
 - Genres are passed as names (strings) in anime create/update, not as IDs. The service resolves names → IDs and auto-creates genres that don't exist.
+- Anime status values: airing, finished, not_yet_aired, paused, cancelled
 
 ## Database Notes
 
