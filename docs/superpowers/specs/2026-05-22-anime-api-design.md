@@ -149,9 +149,23 @@ export const createAnimeSchema = z.object({
   source: z.enum(['manga', 'light_novel', 'original', 'game', 'other']).optional(),
   duration: z.number().int().positive().optional(),
   release_date: z.string().optional(),
+  genres: z.array(z.string()).optional(),  // Nombres de géneros, ej: ["Action", "Fantasy"]
+  rating: z.number().min(0).max(10).optional(),
 });
 
-export const updateAnimeSchema = createAnimeSchema.partial();
+export const updateAnimeSchema = z.object({
+  title: z.string().min(1).optional(),
+  alt_titles: z.record(z.string()).optional(),
+  synopsis: z.string().optional(),
+  image_url: z.string().url().optional(),
+  media_type: z.enum(['tv', 'movie', 'ova', 'ona', 'special']).optional(),
+  status: z.enum(['airing', 'finished', 'not_yet_aired', 'cancelled']).optional(),
+  source: z.enum(['manga', 'light_novel', 'original', 'game', 'other']).optional(),
+  duration: z.number().int().positive().optional(),
+  release_date: z.string().optional(),
+  genres: z.array(z.string()).optional(),  // Reemplaza todos los géneros
+  rating: z.number().min(0).max(10).optional(),
+});
 ```
 
 ```typescript
@@ -510,6 +524,38 @@ Eliminar relación.
 ## CORS
 
 La API debe habilitar CORS para permitir consumo desde browsers. Se usa `hono/cors` middleware configurado en el entry point con origen `*` y métodos GET, POST, PUT, DELETE.
+
+---
+
+## Design Decisions
+
+### Géneros por nombre, no por ID
+
+Al crear o actualizar un anime, los géneros se pasan como nombres:
+
+```json
+{
+  "title": "One Punch Man",
+  "genres": ["Action", "Comedy"]
+}
+```
+
+El servicio busca los géneros por nombre en la DB. Si un género no existe, se crea automáticamente. Al actualizar, el array de géneros reemplaza completamente los géneros anteriores.
+
+### Recursos creados por separado
+
+No hay creación anidada. Cada recurso se crea con su propio endpoint:
+- Crear anime: `POST /api/anime`
+- Crear temporada: `POST /api/anime/:animeId/seasons`
+- Crear episodio: `POST /api/anime/:animeId/seasons/:seasonId/episodes`
+- Asociar género: se hace al crear/actualizar el anime (campo `genres`)
+
+### Cascading deletes
+
+- Eliminar anime → elimina seasons, episodes, anime_genres, anime_relations
+- Eliminar season → elimina episodes
+- Eliminar género → elimina anime_genres asociados
+- Drizzle schema debe tener `onDelete: 'cascade'` en las FK relations y `PRAGMA foreign_keys = ON` al iniciar la DB
 
 ---
 

@@ -64,6 +64,7 @@ test/
 - DB connection is injected into the app context via Hono middleware
 - All timestamps are ISO strings stored as text in SQLite
 - `alt_titles` is stored as JSON text column, parsed/stringified at the service layer
+- Genres are passed as names (strings) in anime create/update, not as IDs. The service resolves names → IDs and auto-creates genres that don't exist.
 
 ## Database Notes
 
@@ -72,8 +73,12 @@ test/
 - `episodes` table has two unique constraints:
   - `UNIQUE(season_id, episode_number)` for TV series
   - `UNIQUE(anime_id, episode_number) WHERE season_id IS NULL` for OVAs/specials (partial index)
-- Cascading deletes: anime → seasons → episodes, anime → anime_genres, anime → anime_relations
+- Cascading deletes with `onDelete: 'cascade'` on all FK relations:
+  - anime → seasons → episodes
+  - anime → anime_genres
+  - anime → anime_relations
 - `alt_titles` stored as JSON text, not a separate table
+- `anime.rating` is the global series rating; `seasons.external_rating` is per-season rating
 
 ## Key Commands
 
