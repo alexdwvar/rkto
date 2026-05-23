@@ -11,6 +11,7 @@ function mapEpisodeRow(row: typeof episodes.$inferSelect) {
     title: row.title,
     duration: row.duration,
     air_date: row.airDate,
+    video_url: row.videoUrl ? JSON.parse(row.videoUrl) : null,
   };
 }
 
@@ -35,6 +36,7 @@ export async function createEpisode(db: Database, animeId: number, data: {
   duration?: number;
   air_date?: string;
   season_id?: number;
+  video_url?: string;
 }) {
   const existingAnime = await db.select({ id: anime.id }).from(anime).where(eq(anime.id, animeId)).get();
   if (!existingAnime) return null;
@@ -53,6 +55,7 @@ export async function createEpisode(db: Database, animeId: number, data: {
     title: data.title,
     duration: data.duration,
     airDate: data.air_date,
+    videoUrl: data.video_url ? JSON.stringify(data.video_url) : null,
   }).returning().get();
   return mapEpisodeRow(result);
 }
@@ -67,6 +70,7 @@ export async function updateEpisode(db: Database, episodeId: number, data: Recor
   if (data.duration !== undefined) updateData.duration = data.duration;
   if (data.air_date !== undefined) updateData.airDate = data.air_date;
   if (data.season_id !== undefined) updateData.seasonId = data.season_id;
+  if (data.video_url !== undefined) updateData.videoUrl = JSON.stringify(data.video_url);
 
   await db.update(episodes).set(updateData).where(eq(episodes.id, episodeId));
   return getEpisodeById(db, episodeId);

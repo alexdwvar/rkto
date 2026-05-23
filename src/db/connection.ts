@@ -29,6 +29,7 @@ function pushSchema(sqlite: Database) {
       alt_titles TEXT,
       synopsis TEXT,
       image_url TEXT,
+      thumbnail_url TEXT,
       media_type TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'not_yet_aired',
       source TEXT,
@@ -59,6 +60,7 @@ function pushSchema(sqlite: Database) {
       title TEXT,
       duration INTEGER,
       air_date TEXT,
+      video_url TEXT,
       UNIQUE(season_id, episode_number)
     );
     CREATE TABLE IF NOT EXISTS genres (

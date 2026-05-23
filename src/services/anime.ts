@@ -156,6 +156,7 @@ export async function createAnime(db: Database, data: {
   alt_titles?: Record<string, string>;
   synopsis?: string;
   image_url?: string;
+  thumbnail_url?: string;
   media_type: string;
   status?: string;
   source?: string;
@@ -171,6 +172,7 @@ export async function createAnime(db: Database, data: {
     altTitles: altTitlesJson,
     synopsis: data.synopsis,
     imageUrl: data.image_url,
+    thumbnailUrl: data.thumbnail_url,
     mediaType: data.media_type,
     status: data.status ?? 'not_yet_aired',
     source: data.source,
@@ -196,6 +198,7 @@ export async function updateAnime(db: Database, id: number, data: z.infer<typeof
   if (data.alt_titles !== undefined) updateData.altTitles = JSON.stringify(data.alt_titles);
   if (data.synopsis !== undefined) updateData.synopsis = data.synopsis;
   if (data.image_url !== undefined) updateData.imageUrl = data.image_url;
+  if (data.thumbnail_url !== undefined) updateData.thumbnailUrl = data.thumbnail_url;
   if (data.media_type !== undefined) updateData.mediaType = data.media_type;
   if (data.status !== undefined) updateData.status = data.status;
   if (data.source !== undefined) updateData.source = data.source;
@@ -232,6 +235,7 @@ function mapAnimeRow(row: typeof anime.$inferSelect) {
     alt_titles: row.altTitles ? JSON.parse(row.altTitles) : null,
     synopsis: row.synopsis,
     image_url: row.imageUrl,
+    thumbnail_url: row.thumbnailUrl,
     media_type: row.mediaType,
     status: row.status,
     source: row.source,

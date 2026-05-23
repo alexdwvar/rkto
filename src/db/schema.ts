@@ -7,6 +7,7 @@ export const anime = sqliteTable('anime', {
   altTitles: text('alt_titles'), // JSON string
   synopsis: text('synopsis'),
   imageUrl: text('image_url'),
+  thumbnailUrl: text('thumbnail_url'),
   mediaType: text('media_type').notNull(),
   status: text('status').notNull().default('not_yet_aired'),
   source: text('source'),
@@ -40,6 +41,7 @@ export const episodes = sqliteTable('episodes', {
   title: text('title'),
   duration: integer('duration'),
   airDate: text('air_date'),
+  videoUrl: text('video_url'), // JSON: [{"source": "crunchyroll", "url": "..."}, ...]
 }, (table) => [
   uniqueIndex('episodes_season_id_episode_number_unique').on(table.seasonId, table.episodeNumber),
 ]);

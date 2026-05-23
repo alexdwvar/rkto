@@ -75,7 +75,8 @@ test/
 - Services contain business logic, routes are thin handlers that call services
 - Hono routes must use full path prefixes (e.g., `/anime/:id` not `/:id`) — `app.route()` does not namespace by sub-app
 - All timestamps are ISO strings stored as text in SQLite
-- `alt_titles` is stored as JSON text column, parsed/stringified at the service layer
+- `video_url` is stored as JSON text column in episodes, parsed/stringified at the service layer. Format: `[{"source": "crunchyroll", "url": "..."}]`
+- `thumbnail_url` on anime is a placeholder for R2/bucket image storage (v2)
 - Genres are passed as names (strings) in anime create/update, not as IDs. The service resolves names → IDs and auto-creates genres that don't exist.
 - Anime status values: airing, finished, not_yet_aired, paused, cancelled
 
@@ -112,7 +113,8 @@ The API exposes `GET /api/docs` which returns a markdown document describing all
 - User ratings (average score per anime)
 - Rate limiting by IP
 - Full-text search (FTS5)
-- Image upload
+- Image upload — R2/bucket para almacenar posters/imagenes
+- Video hosting — servicio externo para episodios (no self-hosted)
 
 ## Language
 
